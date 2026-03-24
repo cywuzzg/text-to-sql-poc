@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -18,3 +18,5 @@ class PipelineResult(BaseModel):
     route: RouteResult
     generated: GenerateResult
     execution: ExecutionResult
+    engine: Literal["main_db", "duckdb"] = "main_db"
+    routing_reasons: List[str] = []
