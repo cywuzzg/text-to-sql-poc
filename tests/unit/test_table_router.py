@@ -102,6 +102,16 @@ class TestTableRouterRoute:
         call_kwargs = mock_claude_client.messages.create.call_args
         assert call_kwargs.kwargs["model"] == "claude-haiku-4-5-20251001"
 
+    def test_markdown_wrapped_json_is_parsed(self, mock_claude_client):
+        payload = {"tables": ["products"], "confidence": 0.95, "reasoning": "stock question"}
+        message = MagicMock()
+        message.content = [MagicMock(text=f"```json\n{json.dumps(payload)}\n```")]
+        mock_claude_client.messages.create.return_value = message
+
+        router = _make_router(mock_claude_client)
+        result = router.route("庫存不足的商品有哪些？")
+        assert result.tables == ["products"]
+
     def test_system_prompt_contains_table_names(self, mock_claude_client):
         _set_response(
             mock_claude_client,

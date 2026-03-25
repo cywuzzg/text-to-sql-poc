@@ -35,7 +35,15 @@ class SQLGenerator:
         raw_text = response.content[0].text.strip()
         return self._parse_response(raw_text)
 
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1]
+            text = text.rsplit("```", 1)[0]
+        return text.strip()
+
     def _parse_response(self, raw_text: str) -> GenerateResult:
+        raw_text = self._strip_markdown(raw_text)
         try:
             data = json.loads(raw_text)
         except json.JSONDecodeError as exc:

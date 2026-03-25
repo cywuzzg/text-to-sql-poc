@@ -106,6 +106,16 @@ class TestSQLGeneratorGenerate:
         result = gen.generate("列出商品名稱", SAMPLE_SCHEMA)
         assert result.explanation == "商品名稱列表"
 
+    def test_markdown_wrapped_json_is_parsed(self, mock_claude_client):
+        payload = {"sql": "SELECT * FROM products WHERE stock < 50", "explanation": "庫存不足"}
+        message = MagicMock()
+        message.content = [MagicMock(text=f"```json\n{json.dumps(payload)}\n```")]
+        mock_claude_client.messages.create.return_value = message
+
+        gen = _make_generator(mock_claude_client)
+        result = gen.generate("庫存不足的商品", SAMPLE_SCHEMA)
+        assert result.sql.upper().startswith("SELECT")
+
     def test_select_with_leading_whitespace_is_allowed(self, mock_claude_client):
         _set_response(
             mock_claude_client,
