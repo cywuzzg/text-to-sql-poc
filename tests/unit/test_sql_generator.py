@@ -97,6 +97,32 @@ class TestSQLGeneratorGenerate:
         with pytest.raises(UnsafeSQLError):
             gen.generate("some query", SAMPLE_SCHEMA)
 
+    def test_system_prompt_specifies_duckdb_not_sqlite(self, mock_claude_client):
+        """Regression: prompt must not instruct Claude to use SQLite syntax."""
+        _set_response(
+            mock_claude_client,
+            {"sql": "SELECT 1", "explanation": "trivial"},
+        )
+        gen = _make_generator(mock_claude_client)
+        gen.generate("test", SAMPLE_SCHEMA)
+
+        system = mock_claude_client.messages.create.call_args.kwargs["system"]
+        assert "DuckDB" in system
+        assert "SQLite" not in system
+
+    def test_system_prompt_includes_duckdb_date_syntax(self, mock_claude_client):
+        """Prompt must mention DuckDB date functions so Claude avoids datetime()."""
+        _set_response(
+            mock_claude_client,
+            {"sql": "SELECT 1", "explanation": "trivial"},
+        )
+        gen = _make_generator(mock_claude_client)
+        gen.generate("test", SAMPLE_SCHEMA)
+
+        system = mock_claude_client.messages.create.call_args.kwargs["system"]
+        # Should guide Claude toward DuckDB interval syntax
+        assert "INTERVAL" in system
+
     def test_invalid_json_raises_value_error(self, mock_claude_client):
         message = MagicMock()
         message.content = [MagicMock(text="not json")]
