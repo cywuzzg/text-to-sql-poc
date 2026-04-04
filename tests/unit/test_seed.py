@@ -75,6 +75,21 @@ class TestGenerateDataframes:
         valid = {"pending", "paid", "shipped", "delivered", "cancelled"}
         assert set(dfs["orders"]["status"].unique()).issubset(valid)
 
+    def test_created_at_is_datetime_dtype_in_users(self):
+        """Regression: created_at must be stored as datetime64, not string/object."""
+        dfs = generate_dataframes()
+        assert pd.api.types.is_datetime64_any_dtype(dfs["users"]["created_at"]), (
+            f"users.created_at dtype is {dfs['users']['created_at'].dtype}, expected datetime64"
+        )
+
+    def test_created_at_is_datetime_dtype_in_products(self):
+        dfs = generate_dataframes()
+        assert pd.api.types.is_datetime64_any_dtype(dfs["products"]["created_at"])
+
+    def test_created_at_is_datetime_dtype_in_orders(self):
+        dfs = generate_dataframes()
+        assert pd.api.types.is_datetime64_any_dtype(dfs["orders"]["created_at"])
+
     def test_total_amount_matches_items(self):
         dfs = generate_dataframes()
         for _, order in dfs["orders"].iterrows():

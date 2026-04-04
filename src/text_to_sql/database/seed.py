@@ -66,9 +66,9 @@ _STATUSES = ["pending", "paid", "shipped", "delivered", "cancelled"]
 _STATUS_WEIGHTS = [0.1, 0.2, 0.3, 0.35, 0.05]
 
 
-def _random_date(days_ago_max: int = 90) -> str:
+def _random_date(now: datetime, days_ago_max: int = 90) -> datetime:
     delta = timedelta(days=random.randint(0, days_ago_max))
-    return (datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
+    return now - delta
 
 
 def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
@@ -81,10 +81,12 @@ def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
         Dict mapping table name → DataFrame.
     """
     random.seed(seed_value)
+    # Fix the reference time so timestamps are fully reproducible for the same seed_value.
+    now = datetime.now().replace(microsecond=0)
 
     users_df = pd.DataFrame(
         [
-            (i + 1, username, email, _random_date(), region)
+            (i + 1, username, email, _random_date(now), region)
             for i, (username, email, region) in enumerate(USERS)
         ],
         columns=["user_id", "username", "email", "created_at", "region"],
@@ -92,7 +94,7 @@ def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
 
     products_df = pd.DataFrame(
         [
-            (i + 1, name, category, price, stock, _random_date())
+            (i + 1, name, category, price, stock, _random_date(now))
             for i, (name, category, price, stock) in enumerate(PRODUCTS)
         ],
         columns=["product_id", "name", "category", "price", "stock", "created_at"],
@@ -110,7 +112,7 @@ def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
     for _ in range(60):
         uid = random.choice(user_ids)
         status = random.choices(_STATUSES, weights=_STATUS_WEIGHTS)[0]
-        created = _random_date()
+        created = _random_date(now)
 
         items_count = random.randint(1, 3)
         chosen_products = random.sample(product_ids, items_count)
