@@ -1,6 +1,7 @@
 """SQL Generator: converts natural language + schema context into a SQL SELECT statement."""
 import json
 import logging
+import re
 
 import anthropic
 
@@ -9,7 +10,9 @@ from text_to_sql.models.request import GenerateResult
 
 logger = logging.getLogger(__name__)
 
-_UNSAFE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "REPLACE")
+_UNSAFE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "REPLACE")
+# Pre-compile word-boundary patterns so 'created_at' is not matched by 'CREATE'.
+_UNSAFE_PATTERNS = [re.compile(rf"\b{kw}\b") for kw in _UNSAFE_KEYWORDS]
 
 
 class UnsafeSQLError(Exception):
@@ -65,8 +68,8 @@ class SQLGenerator:
             raise UnsafeSQLError(
                 f"Only SELECT statements are allowed. Got: {sql[:60]!r}"
             )
-        for prefix in _UNSAFE_PREFIXES:
-            if prefix in upper:
+        for pattern, keyword in zip(_UNSAFE_PATTERNS, _UNSAFE_KEYWORDS):
+            if pattern.search(upper):
                 raise UnsafeSQLError(
-                    f"SQL contains unsafe keyword '{prefix}': {sql[:60]!r}"
+                    f"SQL contains unsafe keyword '{keyword}': {sql[:60]!r}"
                 )

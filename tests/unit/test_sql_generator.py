@@ -75,6 +75,28 @@ class TestSQLGeneratorGenerate:
         with pytest.raises(UnsafeSQLError):
             gen.generate("some query", SAMPLE_SCHEMA)
 
+    def test_created_at_column_not_flagged_as_unsafe(self, mock_claude_client):
+        """Regression: 'created_at' contains 'CREATE' as a substring — must not raise."""
+        _set_response(
+            mock_claude_client,
+            {
+                "sql": "SELECT MIN(created_at) AS earliest, MAX(created_at) AS latest FROM orders",
+                "explanation": "earliest and latest order times",
+            },
+        )
+        gen = _make_generator(mock_claude_client)
+        result = gen.generate("最早和最晚的訂單時間", SAMPLE_SCHEMA)
+        assert result.sql is not None
+
+    def test_alter_keyword_as_standalone_is_blocked(self, mock_claude_client):
+        _set_response(
+            mock_claude_client,
+            {"sql": "ALTER TABLE products ADD COLUMN x INT", "explanation": "alter"},
+        )
+        gen = _make_generator(mock_claude_client)
+        with pytest.raises(UnsafeSQLError):
+            gen.generate("some query", SAMPLE_SCHEMA)
+
     def test_invalid_json_raises_value_error(self, mock_claude_client):
         message = MagicMock()
         message.content = [MagicMock(text="not json")]
