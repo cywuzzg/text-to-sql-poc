@@ -8,5 +8,6 @@ build/
 htmlcov/
 .coverage
 database/ecommerce.db
+data/local/
 .cloude/
 .venv/
