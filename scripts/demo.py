@@ -1,11 +1,21 @@
-"""Interactive Text-to-SQL demo."""
+"""Interactive Text-to-SQL demo.
+
+Usage:
+    # Local mode (no MinIO required — reads data/local/*.parquet)
+    python scripts/demo.py
+
+    # MinIO mode
+    python scripts/demo.py --minio
+"""
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from text_to_sql.config import DB_PATH
-from text_to_sql.pipeline import build_pipeline
+from text_to_sql.pipeline import build_local_pipeline, build_pipeline
+
+DEFAULT_LOCAL_DATA_DIR = Path(__file__).parent.parent / "data" / "local"
 
 BANNER = """
 ╔══════════════════════════════════════════╗
@@ -29,10 +39,15 @@ def _print_result(result) -> None:
     print(f"推理：{result.route.reasoning}")
     print(f"\n生成 SQL：\n{result.generated.sql}")
     print(f"\n說明：{result.generated.explanation}")
-    print(f"\n執行結果（{result.execution.row_count} 筆）：")
+    print(f"\n執行引擎：{result.engine}")
+    print(f"執行結果（{result.execution.row_count} 筆）：")
 
     if not result.execution.success:
         print(f"  [錯誤] {result.execution.error}")
+        return
+
+    if result.execution.csv_url:
+        print(f"  結果已儲存至：{result.execution.csv_url}")
         return
 
     if result.execution.row_count == 0:
@@ -53,9 +68,33 @@ def _print_result(result) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Text-to-SQL interactive demo")
+    parser.add_argument(
+        "--minio",
+        action="store_true",
+        help="Use MinIO backend (default: local Parquet files in data/local/)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DEFAULT_LOCAL_DATA_DIR,
+        help="Local Parquet directory (only used without --minio)",
+    )
+    args = parser.parse_args()
+
     print(BANNER)
-    pipeline = build_pipeline(db_path=DB_PATH, use_mcp=False)
-    print(f"資料庫：{DB_PATH}\n")
+
+    if args.minio:
+        pipeline = build_pipeline()
+        print("模式：MinIO（S3 Parquet）\n")
+    else:
+        data_dir: Path = args.data_dir
+        if not data_dir.exists():
+            print(f"[提示] 找不到資料目錄：{data_dir}")
+            print("請先執行：python scripts/init_local_data.py\n")
+            sys.exit(1)
+        pipeline = build_local_pipeline(data_dir=data_dir)
+        print(f"模式：本地 Parquet（{data_dir}）\n")
 
     while True:
         try:
