@@ -64,3 +64,28 @@ def test_table_schema_has_example_queries():
     for name in get_all_table_names():
         ts = get_table_schema(name)
         assert len(ts.example_queries) > 0
+
+
+class TestDuckDBDialect:
+    """Ensure DDL strings use DuckDB-compatible syntax, not SQLite-specific syntax."""
+
+    def test_no_autoincrement_in_ddl(self):
+        for name in get_all_table_names():
+            ts = get_table_schema(name)
+            assert "AUTOINCREMENT" not in ts.ddl, (
+                f"Table '{name}' DDL contains AUTOINCREMENT (SQLite-only); use INTEGER PRIMARY KEY instead"
+            )
+
+    def test_no_sqlite_datetime_default_in_ddl(self):
+        for name in get_all_table_names():
+            ts = get_table_schema(name)
+            assert "datetime('now')" not in ts.ddl, (
+                f"Table '{name}' DDL uses datetime('now') (SQLite-only); use CURRENT_TIMESTAMP instead"
+            )
+
+    def test_current_timestamp_used_for_created_at(self):
+        for name in ["users", "products", "orders"]:
+            ts = get_table_schema(name)
+            assert "CURRENT_TIMESTAMP" in ts.ddl, (
+                f"Table '{name}' DDL should use CURRENT_TIMESTAMP for created_at default"
+            )

@@ -31,11 +31,11 @@ _REGISTRY: Dict[str, TableSchema] = {
         ],
         ddl=(
             "CREATE TABLE users (\n"
-            "    user_id    INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-            "    username   TEXT NOT NULL UNIQUE,\n"
-            "    email      TEXT NOT NULL UNIQUE,\n"
-            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),\n"
-            "    region     TEXT CHECK(region IN ('north','south','east','west'))\n"
+            "    user_id    INTEGER PRIMARY KEY,\n"
+            "    username   VARCHAR NOT NULL UNIQUE,\n"
+            "    email      VARCHAR NOT NULL UNIQUE,\n"
+            "    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n"
+            "    region     VARCHAR CHECK(region IN ('north','south','east','west'))\n"
             ")"
         ),
         example_queries=["查詢某地區所有用戶", "查某用戶的基本資料", "哪個地區用戶最多"],
@@ -53,12 +53,12 @@ _REGISTRY: Dict[str, TableSchema] = {
         ],
         ddl=(
             "CREATE TABLE products (\n"
-            "    product_id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-            "    name       TEXT NOT NULL,\n"
-            "    category   TEXT NOT NULL CHECK(category IN ('electronics','clothing','food','home')),\n"
-            "    price      REAL NOT NULL CHECK(price > 0),\n"
+            "    product_id INTEGER PRIMARY KEY,\n"
+            "    name       VARCHAR NOT NULL,\n"
+            "    category   VARCHAR NOT NULL CHECK(category IN ('electronics','clothing','food','home')),\n"
+            "    price      DOUBLE NOT NULL CHECK(price > 0),\n"
             "    stock      INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0),\n"
-            "    created_at TEXT NOT NULL DEFAULT (datetime('now'))\n"
+            "    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n"
             ")"
         ),
         example_queries=["庫存不足的商品", "某品類所有商品", "價格最高的前 10 件商品"],
@@ -79,11 +79,11 @@ _REGISTRY: Dict[str, TableSchema] = {
         ],
         ddl=(
             "CREATE TABLE orders (\n"
-            "    order_id     INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    order_id     INTEGER PRIMARY KEY,\n"
             "    user_id      INTEGER NOT NULL REFERENCES users(user_id),\n"
-            "    status       TEXT NOT NULL CHECK(status IN ('pending','paid','shipped','delivered','cancelled')),\n"
-            "    total_amount REAL NOT NULL CHECK(total_amount >= 0),\n"
-            "    created_at   TEXT NOT NULL DEFAULT (datetime('now'))\n"
+            "    status       VARCHAR NOT NULL CHECK(status IN ('pending','paid','shipped','delivered','cancelled')),\n"
+            "    total_amount DOUBLE NOT NULL CHECK(total_amount >= 0),\n"
+            "    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n"
             ")"
         ),
         example_queries=["某用戶所有訂單", "已完成訂單總金額", "最近 30 天訂單數量"],
@@ -100,11 +100,11 @@ _REGISTRY: Dict[str, TableSchema] = {
         ],
         ddl=(
             "CREATE TABLE order_items (\n"
-            "    item_id    INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    item_id    INTEGER PRIMARY KEY,\n"
             "    order_id   INTEGER NOT NULL REFERENCES orders(order_id),\n"
             "    product_id INTEGER NOT NULL REFERENCES products(product_id),\n"
             "    quantity   INTEGER NOT NULL CHECK(quantity > 0),\n"
-            "    unit_price REAL NOT NULL CHECK(unit_price > 0)\n"
+            "    unit_price DOUBLE NOT NULL CHECK(unit_price > 0)\n"
             ")"
         ),
         example_queries=["某訂單的所有商品", "銷售量最高的商品", "各商品的總銷售額"],
