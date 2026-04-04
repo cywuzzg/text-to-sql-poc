@@ -1,6 +1,8 @@
 """Unit tests for TextToSQLPipeline (all components are mocked)."""
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from text_to_sql.models.request import GenerateResult, RouteResult
@@ -131,3 +133,76 @@ class TestTextToSQLPipeline:
         result = pipeline.run("SELECT * FROM orders")
         assert result.execution.csv_url == "results/large.csv"
         assert result.execution.row_count == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: build_local_pipeline factory
+# ---------------------------------------------------------------------------
+
+class TestBuildLocalPipeline:
+    def test_returns_text_to_sql_pipeline_instance(self, tmp_path):
+        from text_to_sql.pipeline import build_local_pipeline
+
+        pipeline = build_local_pipeline(data_dir=tmp_path)
+        assert isinstance(pipeline, TextToSQLPipeline)
+
+    def test_requires_anthropic_api_key(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_local_pipeline
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        pipeline = build_local_pipeline(data_dir=tmp_path)
+        assert pipeline is not None
+
+    def test_pipeline_uses_local_executor(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_local_pipeline
+        from text_to_sql.routing.local_executor import LocalDuckDBExecutor
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        pipeline = build_local_pipeline(data_dir=tmp_path)
+        # The query_router should wrap a LocalDuckDBExecutor
+        assert isinstance(pipeline._query_router._duckdb_executor, LocalDuckDBExecutor)
+
+    def test_local_executor_data_dir_set_correctly(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_local_pipeline
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        pipeline = build_local_pipeline(data_dir=tmp_path)
+        executor = pipeline._query_router._duckdb_executor
+        assert executor._data_dir == tmp_path
+
+    def test_data_dir_defaults_to_local_data_folder(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_local_pipeline
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        # Should not raise even if default dir doesn't exist yet
+        pipeline = build_local_pipeline()
+        assert pipeline is not None
+
+    def test_run_with_mocked_components(self, tmp_path, monkeypatch):
+        """End-to-end: build_local_pipeline runs against a real in-memory executor."""
+        from text_to_sql.pipeline import build_local_pipeline
+        from text_to_sql.routing.local_executor import LocalDuckDBExecutor
+        import duckdb
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+        pipeline = build_local_pipeline(data_dir=tmp_path)
+
+        # Replace internals with mocks so no real Claude API is called
+        pipeline._router = MagicMock()
+        pipeline._router.route.return_value = RouteResult(
+            tables=["products"], confidence=0.9, reasoning="test"
+        )
+        pipeline._generator = MagicMock()
+        pipeline._generator.generate.return_value = GenerateResult(
+            sql="SELECT 1 AS x", explanation="test"
+        )
+
+        # Use an in-memory DuckDB conn so no Parquet files needed
+        conn = duckdb.connect()
+        pipeline._query_router._duckdb_executor._conn = conn
+
+        result = pipeline.run("test query")
+        assert isinstance(result, PipelineResult)
+        assert result.execution.success is True
+        conn.close()

@@ -102,3 +102,40 @@ def build_pipeline() -> TextToSQLPipeline:
         generator=generator,
         query_router=query_router,
     )
+
+
+def build_local_pipeline(data_dir=None) -> TextToSQLPipeline:
+    """Factory: construct a pipeline that reads local Parquet files (no MinIO).
+
+    Designed for local development and testing when MinIO is not available.
+    Parquet files are read from *data_dir* and large results are written as CSV
+    files to ``{data_dir}/results/``.
+
+    Args:
+        data_dir: Path to the directory containing Parquet files. Defaults to
+                  ``data/local/`` relative to the project root.
+    """
+    import anthropic
+    from pathlib import Path
+
+    from text_to_sql.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    from text_to_sql.database.schema_registry import get_all_table_names
+    from text_to_sql.routing.local_executor import LocalDuckDBExecutor
+    from text_to_sql.routing.query_router import QueryRouter
+
+    if data_dir is None:
+        data_dir = Path(__file__).parent.parent.parent / "data" / "local"
+    data_dir = Path(data_dir)
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    table_router = TableRouter(claude_client=client, model=CLAUDE_MODEL)
+    generator = SQLGenerator(claude_client=client, model=CLAUDE_MODEL)
+
+    local_executor = LocalDuckDBExecutor(data_dir=data_dir)
+    query_router = QueryRouter(duckdb_executor=local_executor)
+
+    return TextToSQLPipeline(
+        router=table_router,
+        generator=generator,
+        query_router=query_router,
+    )
