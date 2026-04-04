@@ -1,105 +1,136 @@
-"""DuckDB execution path: export tables to MinIO, then query via DuckDB."""
+"""DuckDB execution path: read Parquet files from MinIO, return ExecutionResult."""
 import io
 import logging
 import os
-import sqlite3
+from datetime import datetime
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 import duckdb
 import pandas as pd
 
+from text_to_sql.models.response import ExecutionResult
+
 logger = logging.getLogger(__name__)
+
+CSV_THRESHOLD = 50
 
 
 class DuckDBExecutor:
-    """Execute heavy SQL queries via DuckDB, reading data from MinIO parquet files.
+    """Execute SQL queries via DuckDB, reading Parquet data directly from MinIO.
 
-    Workflow:
-    1. Export relevant tables from the main DB (SQLite) to parquet files on MinIO.
-    2. Mount the parquet files as DuckDB views (named after the original tables).
-    3. Execute the SQL as-is within DuckDB and return a DataFrame.
+    For result sets with more than CSV_THRESHOLD rows the result is uploaded as
+    a CSV file to MinIO and ``ExecutionResult.csv_url`` is set; ``rows`` will be
+    empty in that case. Smaller result sets are returned inline.
+
+    Args:
+        minio_client: MinIO client instance (minio.Minio).
+        bucket: MinIO bucket that holds the Parquet data files.
+        table_names: All table names available in the bucket.
+        conn: Optional pre-built DuckDB connection for testing. When provided,
+              data must already be registered as views/tables on that connection
+              and no S3 access is attempted.
     """
 
     def __init__(
         self,
         minio_client,
         bucket: str,
-        db_path: str = "",
-        conn: Optional[sqlite3.Connection] = None,
+        table_names: List[str],
+        conn: Optional[duckdb.DuckDBPyConnection] = None,
     ):
         self._minio_client = minio_client
         self._bucket = bucket
-        self._db_path = db_path
-        self._conn = conn  # injected connection for tests
+        self._table_names = table_names
+        self._conn = conn  # injected for tests; None = use S3 path
 
-    def _get_sqlite_conn(self) -> sqlite3.Connection:
-        if self._conn is not None:
-            return self._conn
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
-    def export_table_to_minio(self, table_name: str) -> str:
-        """Export a table from the main DB to MinIO as parquet.
+    def execute(self, sql: str, table_refs: List[str]) -> ExecutionResult:
+        """Execute *sql* and return an ExecutionResult.
+
+        If the injected connection is available the query runs directly on it
+        (test path, no MinIO). Otherwise S3 paths are constructed and Parquet
+        files are mounted as DuckDB views before execution.
 
         Args:
-            table_name: Name of the table to export.
+            sql: The SQL query to execute.
+            table_refs: Table names referenced in the SQL.
 
         Returns:
-            The MinIO S3 path: ``s3://<bucket>/<table_name>.parquet``
+            ExecutionResult with inline rows (<=50) or csv_url (>50).
         """
-        managed = self._conn is None
-        conn = self._get_sqlite_conn()
         try:
-            df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
-        finally:
-            if managed:
-                conn.close()
+            if self._conn is not None:
+                df = self._conn.execute(sql).df()
+            else:
+                s3_paths = {t: f"s3://{self._bucket}/{t}.parquet" for t in table_refs}
+                df = self._execute_in_duckdb(sql, s3_paths)
+        except Exception as exc:
+            logger.error("[DuckDBExecutor] query failed: %s", exc)
+            return ExecutionResult(
+                success=False,
+                columns=[],
+                rows=[],
+                row_count=0,
+                error=str(exc),
+            )
 
-        buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False, engine="pyarrow")
-        buffer.seek(0)
-        data_len = buffer.getbuffer().nbytes
+        return self._build_result(df)
 
-        object_name = f"{table_name}.parquet"
-        self._minio_client.put_object(
-            bucket_name=self._bucket,
-            object_name=object_name,
-            data=buffer,
-            length=data_len,
-            content_type="application/octet-stream",
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_result(self, df: pd.DataFrame) -> ExecutionResult:
+        columns = list(df.columns)
+        row_count = len(df)
+
+        if row_count > CSV_THRESHOLD:
+            csv_url = self._upload_csv(df)
+            logger.info(
+                "[DuckDBExecutor] result has %d rows (>%d), uploaded CSV: %s",
+                row_count,
+                CSV_THRESHOLD,
+                csv_url,
+            )
+            return ExecutionResult(
+                success=True,
+                columns=columns,
+                rows=[],
+                row_count=row_count,
+                csv_url=csv_url,
+            )
+
+        rows = df.values.tolist()
+        logger.info("[DuckDBExecutor] result has %d rows (inline)", row_count)
+        return ExecutionResult(
+            success=True,
+            columns=columns,
+            rows=rows,
+            row_count=row_count,
         )
 
-        path = f"s3://{self._bucket}/{object_name}"
-        logger.info("[DuckDBExecutor] Exported %s → %s (%d bytes)", table_name, path, data_len)
-        return path
+    def _upload_csv(self, df: pd.DataFrame) -> str:
+        """Serialise *df* as CSV and upload to MinIO; return the object key."""
+        key = f"results/{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}.csv"
+        buf = io.BytesIO(df.to_csv(index=False).encode("utf-8"))
+        data_len = buf.getbuffer().nbytes
 
-    def execute(self, sql: str, table_refs: List[str]) -> pd.DataFrame:
-        """Execute SQL in DuckDB using parquet files from MinIO.
-
-        Args:
-            sql: The SQL query to execute (table names must match table_refs).
-            table_refs: List of table names referenced in the SQL.
-
-        Returns:
-            Query result as a pandas DataFrame.
-        """
-        s3_paths: Dict[str, str] = {}
-        for table_name in table_refs:
-            s3_paths[table_name] = self.export_table_to_minio(table_name)
-
-        return self._execute_in_duckdb(sql, s3_paths)
+        self._minio_client.put_object(
+            bucket_name=self._bucket,
+            object_name=key,
+            data=buf,
+            length=data_len,
+            content_type="text/csv",
+        )
+        logger.info("[DuckDBExecutor] Uploaded CSV → %s (%d bytes)", key, data_len)
+        return key
 
     def _execute_in_duckdb(self, sql: str, s3_paths: Dict[str, str]) -> pd.DataFrame:
-        """Internal: mount parquet files as views and execute SQL in DuckDB.
-
-        Args:
-            sql: SQL to execute.
-            s3_paths: Mapping from table name to S3 parquet path.
-
-        Returns:
-            Query result as a pandas DataFrame.
-        """
+        """Mount MinIO Parquet views and execute *sql* in a fresh DuckDB connection."""
         endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
         access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
         secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
@@ -120,5 +151,5 @@ class DuckDBExecutor:
 
             result = conn.execute(sql).df()
 
-        logger.info("[DuckDBExecutor] Executed SQL, returned %d rows", len(result))
+        logger.info("[DuckDBExecutor] executed SQL, %d rows", len(result))
         return result

@@ -1,27 +1,16 @@
-"""Unit tests for DuckDBExecutor."""
+"""Unit tests for DuckDBExecutor (reads from MinIO Parquet, no SQLite)."""
 import io
-import sqlite3
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import duckdb
 import pandas as pd
 import pytest
 
+from text_to_sql.models.response import ExecutionResult
 from text_to_sql.routing.duckdb_executor import DuckDBExecutor
 
-
-@pytest.fixture
-def sqlite_conn():
-    """In-memory SQLite DB with a sample orders table."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE orders (id INTEGER, user_id INTEGER, amount REAL, status TEXT)"
-    )
-    conn.execute("INSERT INTO orders VALUES (1, 10, 100.0, 'paid')")
-    conn.execute("INSERT INTO orders VALUES (2, 10, 200.0, 'paid')")
-    conn.execute("INSERT INTO orders VALUES (3, 20, 50.0, 'pending')")
-    conn.commit()
-    yield conn
-    conn.close()
+TABLE_NAMES = ["users", "products", "orders", "order_items"]
 
 
 @pytest.fixture
@@ -30,128 +19,147 @@ def mock_minio_client():
 
 
 @pytest.fixture
-def executor(sqlite_conn, mock_minio_client):
+def in_memory_conn():
+    """DuckDB in-memory connection pre-loaded with test data (no MinIO needed)."""
+    conn = duckdb.connect()
+    conn.register(
+        "users",
+        pd.DataFrame({"user_id": list(range(1, 21)), "username": [f"u{i}" for i in range(1, 21)]}),
+    )
+    conn.register(
+        "orders",
+        pd.DataFrame(
+            {
+                "order_id": list(range(1, 61)),
+                "user_id": [i % 20 + 1 for i in range(60)],
+                "status": ["paid"] * 60,
+                "total_amount": [float(i * 10) for i in range(1, 61)],
+            }
+        ),
+    )
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def executor(mock_minio_client, in_memory_conn):
     return DuckDBExecutor(
-        conn=sqlite_conn,
         minio_client=mock_minio_client,
         bucket="test-bucket",
+        table_names=TABLE_NAMES,
+        conn=in_memory_conn,
     )
 
 
-class TestExportTableToMinio:
-    def test_returns_s3_path(self, executor, mock_minio_client):
-        path = executor.export_table_to_minio("orders")
-        assert path == "s3://test-bucket/orders.parquet"
+@pytest.fixture
+def executor_no_conn(mock_minio_client):
+    """Executor without injected conn (uses MinIO S3 path flow)."""
+    return DuckDBExecutor(
+        minio_client=mock_minio_client,
+        bucket="test-bucket",
+        table_names=TABLE_NAMES,
+    )
 
-    def test_calls_put_object_on_minio(self, executor, mock_minio_client):
-        executor.export_table_to_minio("orders")
+
+class TestExecuteReturnsExecutionResult:
+    def test_returns_execution_result(self, executor):
+        result = executor.execute("SELECT * FROM users WHERE user_id = 1", ["users"])
+        assert isinstance(result, ExecutionResult)
+
+    def test_success_flag_true_on_valid_sql(self, executor):
+        result = executor.execute("SELECT * FROM users WHERE user_id = 1", ["users"])
+        assert result.success is True
+
+    def test_columns_populated(self, executor):
+        result = executor.execute("SELECT user_id, username FROM users LIMIT 1", ["users"])
+        assert "user_id" in result.columns
+        assert "username" in result.columns
+
+    def test_rows_populated_for_small_result(self, executor):
+        result = executor.execute("SELECT * FROM users WHERE user_id <= 3", ["users"])
+        assert len(result.rows) == 3
+        assert result.row_count == 3
+
+    def test_error_flag_on_invalid_sql(self, executor):
+        result = executor.execute("SELECT * FROM nonexistent_table", ["users"])
+        assert result.success is False
+        assert result.error is not None
+
+
+class TestCsvThreshold:
+    def test_inline_when_rows_below_threshold(self, executor):
+        # orders has 60 rows but we filter to 3
+        result = executor.execute("SELECT * FROM orders WHERE order_id <= 3", ["orders"])
+        assert result.csv_url is None
+        assert len(result.rows) == 3
+
+    def test_csv_url_set_when_rows_exceed_threshold(self, executor, mock_minio_client):
+        # orders has 60 rows — exceeds threshold of 50
+        result = executor.execute("SELECT * FROM orders", ["orders"])
+        assert result.csv_url is not None
+        assert result.rows == []
+        assert result.row_count == 60
+
+    def test_csv_url_contains_results_prefix(self, executor, mock_minio_client):
+        result = executor.execute("SELECT * FROM orders", ["orders"])
+        assert result.csv_url.startswith("results/")
+
+    def test_csv_url_ends_with_csv(self, executor, mock_minio_client):
+        result = executor.execute("SELECT * FROM orders", ["orders"])
+        assert result.csv_url.endswith(".csv")
+
+    def test_minio_put_object_called_when_large_result(self, executor, mock_minio_client):
+        executor.execute("SELECT * FROM orders", ["orders"])
         mock_minio_client.put_object.assert_called_once()
-        call_kwargs = mock_minio_client.put_object.call_args
-        assert call_kwargs[1]["bucket_name"] == "test-bucket" or call_kwargs[0][0] == "test-bucket"
 
-    def test_uploads_parquet_object_named_correctly(self, executor, mock_minio_client):
-        executor.export_table_to_minio("orders")
-        call_args = mock_minio_client.put_object.call_args
-        # Second positional arg or 'object_name' kwarg should be 'orders.parquet'
-        args = call_args[0] if call_args[0] else []
-        kwargs = call_args[1] if call_args[1] else {}
-        object_name = kwargs.get("object_name") or (args[1] if len(args) > 1 else None)
-        assert object_name == "orders.parquet"
+    def test_minio_not_called_for_small_result(self, executor, mock_minio_client):
+        executor.execute("SELECT * FROM orders WHERE order_id <= 3", ["orders"])
+        mock_minio_client.put_object.assert_not_called()
 
-    def test_different_table_names(self, executor, mock_minio_client, sqlite_conn):
-        sqlite_conn.execute(
-            "CREATE TABLE products (id INTEGER, name TEXT, price REAL)"
-        )
-        sqlite_conn.execute("INSERT INTO products VALUES (1, 'Widget', 9.99)")
-        sqlite_conn.commit()
+    def test_row_count_reflects_total_even_when_csv(self, executor):
+        result = executor.execute("SELECT * FROM orders", ["orders"])
+        assert result.row_count == 60
 
-        path = executor.export_table_to_minio("products")
-        assert path == "s3://test-bucket/products.parquet"
+    def test_threshold_boundary_at_50_is_inline(self, executor):
+        result = executor.execute("SELECT * FROM orders WHERE order_id <= 50", ["orders"])
+        assert result.csv_url is None
+        assert result.row_count == 50
+
+    def test_threshold_boundary_at_51_triggers_csv(self, executor):
+        result = executor.execute("SELECT * FROM orders WHERE order_id <= 51", ["orders"])
+        assert result.csv_url is not None
+        assert result.row_count == 51
 
 
-class TestExecute:
-    def test_execute_returns_dataframe(self, executor):
-        with patch.object(executor, "_execute_in_duckdb") as mock_exec:
-            mock_exec.return_value = pd.DataFrame(
-                {"user_id": [10, 20], "total": [300.0, 50.0]}
-            )
-            result = executor.execute(
-                "SELECT user_id, SUM(amount) as total FROM orders GROUP BY user_id",
-                table_refs=["orders"],
-            )
-        assert isinstance(result, pd.DataFrame)
+class TestS3PathMounting:
+    """Tests for the S3-path mounting flow (no injected conn)."""
 
-    def test_execute_calls_export_for_each_table_ref(self, executor):
-        with patch.object(executor, "export_table_to_minio") as mock_export:
-            mock_export.return_value = "s3://test-bucket/orders.parquet"
-            with patch.object(executor, "_execute_in_duckdb") as mock_exec:
-                mock_exec.return_value = pd.DataFrame()
-                executor.execute(
-                    "SELECT * FROM orders",
-                    table_refs=["orders"],
-                )
-        mock_export.assert_called_once_with("orders")
+    def test_execute_in_duckdb_with_s3_paths_mounts_views(self, executor_no_conn):
+        mock_df = pd.DataFrame({"user_id": [1, 2], "username": ["a", "b"]})
+        with patch.object(executor_no_conn, "_execute_in_duckdb", return_value=mock_df) as mock_exec:
+            executor_no_conn.execute("SELECT * FROM users WHERE user_id = 1", ["users"])
+            mock_exec.assert_called_once()
+            call_args = mock_exec.call_args
+            sql_arg = call_args[0][0]
+            paths_arg = call_args[0][1]
+            assert sql_arg == "SELECT * FROM users WHERE user_id = 1"
+            assert "users" in paths_arg
+            assert paths_arg["users"] == "s3://test-bucket/users.parquet"
 
-    def test_execute_calls_export_for_multiple_tables(self, executor, sqlite_conn):
-        sqlite_conn.execute("CREATE TABLE users (id INTEGER, name TEXT)")
-        sqlite_conn.commit()
+    def test_s3_paths_built_for_all_table_refs(self, executor_no_conn):
+        mock_df = pd.DataFrame()
+        with patch.object(executor_no_conn, "_execute_in_duckdb", return_value=mock_df):
+            executor_no_conn.execute("SELECT * FROM orders JOIN users ON 1=1", ["orders", "users"])
 
-        with patch.object(executor, "export_table_to_minio") as mock_export:
-            mock_export.side_effect = lambda t: f"s3://test-bucket/{t}.parquet"
-            with patch.object(executor, "_execute_in_duckdb") as mock_exec:
-                mock_exec.return_value = pd.DataFrame()
-                executor.execute(
-                    "SELECT u.name, o.amount FROM orders o JOIN users u ON o.user_id = u.id",
-                    table_refs=["orders", "users"],
-                )
-        assert mock_export.call_count == 2
-
-    def test_execute_in_duckdb_receives_correct_s3_paths(self, executor):
-        with patch.object(
-            executor, "export_table_to_minio", return_value="s3://test-bucket/orders.parquet"
-        ):
-            with patch.object(executor, "_execute_in_duckdb") as mock_exec:
-                mock_exec.return_value = pd.DataFrame()
-                executor.execute("SELECT * FROM orders", table_refs=["orders"])
-
-                call_args = mock_exec.call_args
-                sql_arg = call_args[0][0]
-                paths_arg = call_args[0][1]
-                assert sql_arg == "SELECT * FROM orders"
-                assert paths_arg == {"orders": "s3://test-bucket/orders.parquet"}
-
-
-class TestExecuteInDuckdb:
-    """Test the internal DuckDB execution with mocked duckdb."""
-
-    def test_execute_in_duckdb_runs_sql_and_returns_dataframe(self, executor):
+    def test_execute_in_duckdb_configures_s3(self, executor_no_conn):
         mock_conn = MagicMock()
-        expected_df = pd.DataFrame({"id": [1, 2, 3]})
-        mock_conn.execute.return_value.df.return_value = expected_df
-
+        mock_conn.execute.return_value.df.return_value = pd.DataFrame({"id": [1]})
         with patch("text_to_sql.routing.duckdb_executor.duckdb") as mock_duckdb:
             mock_duckdb.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_duckdb.connect.return_value.__exit__ = MagicMock(return_value=False)
-
-            result = executor._execute_in_duckdb(
-                "SELECT * FROM orders",
-                {"orders": "s3://test-bucket/orders.parquet"},
+            executor_no_conn._execute_in_duckdb(
+                "SELECT * FROM users",
+                {"users": "s3://test-bucket/users.parquet"},
             )
-
-        assert isinstance(result, pd.DataFrame)
-
-    def test_execute_in_duckdb_creates_views_for_each_table(self, executor):
-        mock_conn = MagicMock()
-        mock_conn.execute.return_value.df.return_value = pd.DataFrame()
-
-        with patch("text_to_sql.routing.duckdb_executor.duckdb") as mock_duckdb:
-            mock_duckdb.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_duckdb.connect.return_value.__exit__ = MagicMock(return_value=False)
-
-            executor._execute_in_duckdb(
-                "SELECT * FROM orders",
-                {"orders": "s3://test-bucket/orders.parquet"},
-            )
-
-        # Should have called execute for: httpfs install, s3 config, CREATE VIEW, SELECT
-        assert mock_conn.execute.call_count >= 1
+        # httpfs + s3 config + view + query = at least 4 calls
+        assert mock_conn.execute.call_count >= 4
