@@ -48,6 +48,32 @@ class TestExecutionResult:
         r = ExecutionResult(success=True, columns=["id"], rows=[], row_count=0)
         assert r.row_count == 0
 
+    def test_csv_url_defaults_to_none(self):
+        r = ExecutionResult(success=True, columns=["id"], rows=[[1]], row_count=1)
+        assert r.csv_url is None
+
+    def test_csv_url_set_when_large_result(self):
+        r = ExecutionResult(
+            success=True,
+            columns=["id"],
+            rows=[],
+            row_count=100,
+            csv_url="results/20240101_abc123.csv",
+        )
+        assert r.csv_url == "results/20240101_abc123.csv"
+        assert r.rows == []
+
+    def test_csv_url_and_rows_empty_coexist(self):
+        r = ExecutionResult(
+            success=True,
+            columns=["id", "name"],
+            rows=[],
+            row_count=200,
+            csv_url="results/large.csv",
+        )
+        assert r.row_count == 200
+        assert r.csv_url is not None
+
 
 class TestPipelineResult:
     def test_pipeline_result_assembly(self):

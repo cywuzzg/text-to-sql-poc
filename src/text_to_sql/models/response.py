@@ -11,6 +11,7 @@ class ExecutionResult(BaseModel):
     rows: List[List[Any]]
     row_count: int
     error: Optional[str] = None
+    csv_url: Optional[str] = None  # set when row_count > CSV_THRESHOLD; rows will be empty
 
 
 class PipelineResult(BaseModel):
