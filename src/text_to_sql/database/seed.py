@@ -1,7 +1,10 @@
+"""Generate seed DataFrames and upload to MinIO as Parquet files."""
+import io
 import random
-import sqlite3
 from datetime import datetime, timedelta
-from typing import List, Tuple
+from typing import Dict, List, Tuple
+
+import pandas as pd
 
 USERS: List[Tuple] = [
     ("alice", "alice@example.com", "north"),
@@ -68,54 +71,98 @@ def _random_date(days_ago_max: int = 90) -> str:
     return (datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def seed(conn: sqlite3.Connection, seed_value: int = 42) -> None:
-    """Insert reproducible seed data into all tables."""
+def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
+    """Generate seed DataFrames for all four tables.
+
+    Args:
+        seed_value: Random seed for reproducibility.
+
+    Returns:
+        Dict mapping table name → DataFrame.
+    """
     random.seed(seed_value)
-    cur = conn.cursor()
 
-    # users
-    cur.executemany(
-        "INSERT OR IGNORE INTO users (username, email, region) VALUES (?, ?, ?)",
-        USERS,
+    users_df = pd.DataFrame(
+        [
+            (i + 1, username, email, _random_date(), region)
+            for i, (username, email, region) in enumerate(USERS)
+        ],
+        columns=["user_id", "username", "email", "created_at", "region"],
     )
 
-    # products
-    cur.executemany(
-        "INSERT OR IGNORE INTO products (name, category, price, stock) VALUES (?, ?, ?, ?)",
-        PRODUCTS,
+    products_df = pd.DataFrame(
+        [
+            (i + 1, name, category, price, stock, _random_date())
+            for i, (name, category, price, stock) in enumerate(PRODUCTS)
+        ],
+        columns=["product_id", "name", "category", "price", "stock", "created_at"],
     )
 
-    conn.commit()
-    user_ids = [row[0] for row in cur.execute("SELECT user_id FROM users").fetchall()]
-    product_ids = [row[0] for row in cur.execute("SELECT product_id FROM products").fetchall()]
-    product_prices = {
-        row[0]: row[1]
-        for row in cur.execute("SELECT product_id, price FROM products").fetchall()
-    }
+    product_prices = dict(zip(products_df["product_id"], products_df["price"]))
+    user_ids = list(users_df["user_id"])
+    product_ids = list(products_df["product_id"])
 
-    # orders + order_items  (60 orders, ~2 items each)
+    orders_rows = []
+    order_items_rows = []
+    order_id = 1
+    item_id = 1
+
     for _ in range(60):
         uid = random.choice(user_ids)
         status = random.choices(_STATUSES, weights=_STATUS_WEIGHTS)[0]
         created = _random_date()
 
-        # pick 1-3 items
         items_count = random.randint(1, 3)
         chosen_products = random.sample(product_ids, items_count)
         quantities = [random.randint(1, 4) for _ in chosen_products]
         prices = [product_prices[pid] for pid in chosen_products]
         total = sum(q * p for q, p in zip(quantities, prices))
 
-        cur.execute(
-            "INSERT INTO orders (user_id, status, total_amount, created_at) VALUES (?, ?, ?, ?)",
-            (uid, status, total, created),
-        )
-        order_id = cur.lastrowid
+        orders_rows.append((order_id, uid, status, total, created))
 
         for pid, qty, price in zip(chosen_products, quantities, prices):
-            cur.execute(
-                "INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES (?, ?, ?, ?)",
-                (order_id, pid, qty, price),
-            )
+            order_items_rows.append((item_id, order_id, pid, qty, price))
+            item_id += 1
 
-    conn.commit()
+        order_id += 1
+
+    orders_df = pd.DataFrame(
+        orders_rows,
+        columns=["order_id", "user_id", "status", "total_amount", "created_at"],
+    )
+    order_items_df = pd.DataFrame(
+        order_items_rows,
+        columns=["item_id", "order_id", "product_id", "quantity", "unit_price"],
+    )
+
+    return {
+        "users": users_df,
+        "products": products_df,
+        "orders": orders_df,
+        "order_items": order_items_df,
+    }
+
+
+def seed(minio_client, bucket: str, seed_value: int = 42) -> None:
+    """Generate seed DataFrames and upload to MinIO as Parquet files.
+
+    Args:
+        minio_client: MinIO client instance (minio.Minio).
+        bucket: Destination bucket name.
+        seed_value: Random seed for reproducibility.
+    """
+    dataframes = generate_dataframes(seed_value=seed_value)
+
+    for table_name, df in dataframes.items():
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False, engine="pyarrow")
+        buf.seek(0)
+        data_len = buf.getbuffer().nbytes
+
+        minio_client.put_object(
+            bucket_name=bucket,
+            object_name=f"{table_name}.parquet",
+            data=buf,
+            length=data_len,
+            content_type="application/octet-stream",
+        )
