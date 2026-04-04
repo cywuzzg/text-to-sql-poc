@@ -1,21 +1,19 @@
-import sqlite3
 from unittest.mock import MagicMock
 
+import duckdb
+import pandas as pd
 import pytest
 
-from text_to_sql.database.schema import DDL_STATEMENTS
-from text_to_sql.database.seed import seed
+from text_to_sql.database.seed import generate_dataframes
 
 
 @pytest.fixture
-def in_memory_db() -> sqlite3.Connection:
-    """In-memory SQLite DB with schema and seed data, auto-closed after test."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("PRAGMA foreign_keys = ON")
-    for stmt in DDL_STATEMENTS:
-        conn.execute(stmt)
-    conn.commit()
-    seed(conn)
+def in_memory_duckdb() -> duckdb.DuckDBPyConnection:
+    """In-memory DuckDB connection with all four tables registered as views."""
+    dfs = generate_dataframes()
+    conn = duckdb.connect()
+    for table_name, df in dfs.items():
+        conn.register(table_name, df)
     yield conn
     conn.close()
 
