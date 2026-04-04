@@ -19,5 +19,5 @@ class PipelineResult(BaseModel):
     route: RouteResult
     generated: GenerateResult
     execution: ExecutionResult
-    engine: Literal["main_db", "duckdb"] = "main_db"
+    engine: Literal["duckdb", "duckdb_light"] = "duckdb_light"
     routing_reasons: List[str] = []
