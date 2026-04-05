@@ -150,3 +150,23 @@ class TestGetReason:
         sql = "SELECT * FROM users WHERE id = 1"
         result = classifier.get_reason(sql)
         assert isinstance(result, list)
+
+
+class TestStringLiteralEdgeCases:
+    """Keywords inside string literals must not influence classification."""
+
+    def test_group_by_in_string_literal_not_heavy(self, classifier):
+        sql = "SELECT * FROM orders WHERE note = 'this GROUP BY user was applied' LIMIT 10"
+        assert classifier.is_heavy_query(sql) is False
+
+    def test_having_in_string_literal_not_heavy(self, classifier):
+        sql = "SELECT * FROM users WHERE label = 'HAVING clause example' LIMIT 10"
+        assert classifier.is_heavy_query(sql) is False
+
+    def test_count_call_in_string_literal_not_heavy(self, classifier):
+        sql = "SELECT * FROM products WHERE description = 'COUNT(*) is expensive' LIMIT 10"
+        assert classifier.is_heavy_query(sql) is False
+
+    def test_window_over_in_string_literal_not_heavy(self, classifier):
+        sql = "SELECT * FROM orders WHERE note = 'use OVER (PARTITION BY x)' LIMIT 10"
+        assert classifier.is_heavy_query(sql) is False

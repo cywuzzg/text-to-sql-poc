@@ -176,3 +176,48 @@ class TestSQLGeneratorGenerate:
 
         call_kwargs = mock_claude_client.messages.create.call_args.kwargs
         assert call_kwargs["tool_choice"] == {"type": "tool", "name": "output_sql"}
+
+
+class TestValidateSQLStringLiterals:
+    """Edge cases: dangerous keywords inside string literals must NOT raise UnsafeSQLError."""
+
+    def test_drop_in_string_literal_is_safe(self):
+        SQLGenerator._validate_sql(
+            "SELECT * FROM products WHERE name = 'DROP TABLE products'"
+        )
+
+    def test_insert_in_string_literal_is_safe(self):
+        SQLGenerator._validate_sql(
+            "SELECT * FROM orders WHERE note = 'INSERT INTO log values here'"
+        )
+
+    def test_delete_in_string_literal_is_safe(self):
+        SQLGenerator._validate_sql(
+            "SELECT * FROM users WHERE comment = 'DELETE FROM users WHERE id=1'"
+        )
+
+    def test_truncate_in_string_literal_is_safe(self):
+        SQLGenerator._validate_sql(
+            "SELECT * FROM users WHERE label = 'TRUNCATE TABLE users'"
+        )
+
+    def test_update_in_string_literal_is_safe(self):
+        SQLGenerator._validate_sql(
+            "SELECT * FROM orders WHERE status = 'UPDATE pending'"
+        )
+
+    def test_actual_drop_still_raises(self):
+        with pytest.raises(UnsafeSQLError):
+            SQLGenerator._validate_sql("DROP TABLE products")
+
+    def test_actual_delete_still_raises(self):
+        with pytest.raises(UnsafeSQLError):
+            SQLGenerator._validate_sql("DELETE FROM products WHERE 1=1")
+
+    def test_actual_insert_still_raises(self):
+        with pytest.raises(UnsafeSQLError):
+            SQLGenerator._validate_sql("INSERT INTO products VALUES (1,'x',1.0,10)")
+
+    def test_actual_create_still_raises(self):
+        with pytest.raises(UnsafeSQLError):
+            SQLGenerator._validate_sql("CREATE TABLE foo (id INT)")
