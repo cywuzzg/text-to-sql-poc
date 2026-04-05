@@ -46,6 +46,7 @@ class LocalDuckDBExecutor:
     ):
         self._data_dir = Path(data_dir)
         self._conn = conn
+        self._persistent_conn: Optional[duckdb.DuckDBPyConnection] = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -55,7 +56,7 @@ class LocalDuckDBExecutor:
         """Execute *sql* and return an ExecutionResult.
 
         Uses the injected connection when available (test path). Otherwise mounts
-        Parquet views from *data_dir* and executes in a fresh DuckDB connection.
+        Parquet views from *data_dir* on a persistent DuckDB connection.
 
         Args:
             sql: The SQL query to execute.
@@ -85,6 +86,28 @@ class LocalDuckDBExecutor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_or_create_conn(self) -> duckdb.DuckDBPyConnection:
+        if self._persistent_conn is None:
+            self._persistent_conn = duckdb.connect()
+        return self._persistent_conn
+
+    def _execute_from_parquet(self, sql: str, table_refs: List[str]) -> pd.DataFrame:
+        """Mount local Parquet views on the persistent connection and execute *sql*."""
+        conn = self._get_or_create_conn()
+
+        for table_name in table_refs:
+            parquet_path = self._data_dir / f"{table_name}.parquet"
+            conn.execute(
+                f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}');"
+            )
+            logger.debug(
+                "[LocalDuckDBExecutor] Mounted %s → %s", table_name, parquet_path
+            )
+
+        result = conn.execute(sql).df()
+        logger.info("[LocalDuckDBExecutor] executed SQL, %d rows", len(result))
+        return result
 
     def _build_result(self, df: pd.DataFrame) -> ExecutionResult:
         columns = list(df.columns)
@@ -124,20 +147,3 @@ class LocalDuckDBExecutor:
         df.to_csv(csv_path, index=False)
         logger.info("[LocalDuckDBExecutor] Saved CSV → %s", csv_path)
         return csv_path
-
-    def _execute_from_parquet(self, sql: str, table_refs: List[str]) -> pd.DataFrame:
-        """Mount local Parquet views and execute *sql* in a fresh DuckDB connection."""
-        with duckdb.connect() as conn:
-            for table_name in table_refs:
-                parquet_path = self._data_dir / f"{table_name}.parquet"
-                conn.execute(
-                    f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}');"
-                )
-                logger.debug(
-                    "[LocalDuckDBExecutor] Mounted %s → %s", table_name, parquet_path
-                )
-
-            result = conn.execute(sql).df()
-
-        logger.info("[LocalDuckDBExecutor] executed SQL, %d rows", len(result))
-        return result

@@ -151,15 +151,41 @@ class TestS3PathMounting:
         with patch.object(executor_no_conn, "_execute_in_duckdb", return_value=mock_df):
             executor_no_conn.execute("SELECT * FROM orders JOIN users ON 1=1", ["orders", "users"])
 
-    def test_execute_in_duckdb_configures_s3(self, executor_no_conn):
+    def test_create_s3_conn_configures_httpfs_and_credentials(self, executor_no_conn):
+        mock_conn = MagicMock()
+        with patch("text_to_sql.routing.duckdb_executor.duckdb.connect", return_value=mock_conn):
+            executor_no_conn._create_s3_conn()
+        # INSTALL/LOAD httpfs + 4 S3 settings = at least 4 execute calls
+        assert mock_conn.execute.call_count >= 4
+
+
+class TestPersistentConnection:
+    """Tests for connection reuse across multiple queries."""
+
+    def test_persistent_conn_is_none_initially(self, executor_no_conn):
+        assert executor_no_conn._persistent_conn is None
+
+    def test_get_or_create_conn_creates_on_first_call(self, executor_no_conn):
+        mock_conn = MagicMock()
+        with patch.object(executor_no_conn, "_create_s3_conn", return_value=mock_conn) as mock_create:
+            result = executor_no_conn._get_or_create_conn()
+        assert result is mock_conn
+        assert mock_create.call_count == 1
+
+    def test_get_or_create_conn_reuses_on_second_call(self, executor_no_conn):
+        mock_conn = MagicMock()
+        with patch.object(executor_no_conn, "_create_s3_conn", return_value=mock_conn) as mock_create:
+            executor_no_conn._get_or_create_conn()
+            executor_no_conn._get_or_create_conn()
+        assert mock_create.call_count == 1
+
+    def test_execute_uses_create_or_replace_view(self, executor_no_conn):
         mock_conn = MagicMock()
         mock_conn.execute.return_value.df.return_value = pd.DataFrame({"id": [1]})
-        with patch("text_to_sql.routing.duckdb_executor.duckdb") as mock_duckdb:
-            mock_duckdb.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_duckdb.connect.return_value.__exit__ = MagicMock(return_value=False)
+        with patch.object(executor_no_conn, "_get_or_create_conn", return_value=mock_conn):
             executor_no_conn._execute_in_duckdb(
                 "SELECT * FROM users",
                 {"users": "s3://test-bucket/users.parquet"},
             )
-        # httpfs + s3 config + view + query = at least 4 calls
-        assert mock_conn.execute.call_count >= 4
+        calls = [str(c) for c in mock_conn.execute.call_args_list]
+        assert any("CREATE OR REPLACE VIEW" in c for c in calls)

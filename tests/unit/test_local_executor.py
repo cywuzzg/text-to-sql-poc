@@ -1,7 +1,7 @@
 """Unit tests for LocalDuckDBExecutor (no MinIO required)."""
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import duckdb
 import pandas as pd
@@ -189,6 +189,44 @@ class TestLocalDuckDBExecutorErrors:
 # ---------------------------------------------------------------------------
 # Tests: reading from local Parquet files (no injected conn)
 # ---------------------------------------------------------------------------
+
+class TestLocalPersistentConnection:
+    """Tests for connection reuse across multiple queries."""
+
+    @pytest.fixture
+    def products_parquet(self, tmp_data_dir) -> Path:
+        df = pd.DataFrame(
+            [(1, "Widget", 9.99, 5)],
+            columns=["product_id", "name", "price", "stock"],
+        )
+        df.to_parquet(tmp_data_dir / "products.parquet", index=False)
+        return tmp_data_dir
+
+    def test_persistent_conn_is_none_initially(self, tmp_data_dir):
+        executor = LocalDuckDBExecutor(data_dir=tmp_data_dir)
+        assert executor._persistent_conn is None
+
+    def test_persistent_conn_set_after_first_query(self, products_parquet):
+        executor = LocalDuckDBExecutor(data_dir=products_parquet)
+        executor.execute("SELECT * FROM products", ["products"])
+        assert executor._persistent_conn is not None
+
+    def test_same_conn_object_reused_on_second_query(self, products_parquet):
+        executor = LocalDuckDBExecutor(data_dir=products_parquet)
+        executor.execute("SELECT * FROM products", ["products"])
+        first_conn = executor._persistent_conn
+        executor.execute("SELECT * FROM products", ["products"])
+        assert executor._persistent_conn is first_conn
+
+    def test_execute_uses_create_or_replace_view(self, tmp_data_dir):
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.df.return_value = pd.DataFrame({"id": [1]})
+        executor = LocalDuckDBExecutor(data_dir=tmp_data_dir)
+        with patch.object(executor, "_get_or_create_conn", return_value=mock_conn):
+            executor._execute_from_parquet("SELECT * FROM products", ["products"])
+        calls = [str(c) for c in mock_conn.execute.call_args_list]
+        assert any("CREATE OR REPLACE VIEW" in c for c in calls)
+
 
 class TestLocalDuckDBExecutorFromParquet:
     def test_reads_parquet_file_without_injected_conn(self, tmp_data_dir):

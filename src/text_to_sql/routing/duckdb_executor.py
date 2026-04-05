@@ -43,6 +43,7 @@ class DuckDBExecutor:
         self._bucket = bucket
         self._table_names = table_names
         self._conn = conn  # injected for tests; None = use S3 path
+        self._persistent_conn: Optional[duckdb.DuckDBPyConnection] = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -83,6 +84,40 @@ class DuckDBExecutor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_or_create_conn(self) -> duckdb.DuckDBPyConnection:
+        if self._persistent_conn is None:
+            self._persistent_conn = self._create_s3_conn()
+        return self._persistent_conn
+
+    def _create_s3_conn(self) -> duckdb.DuckDBPyConnection:
+        """Create a DuckDB connection pre-configured with httpfs and S3 credentials."""
+        endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+        access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+        secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+
+        conn = duckdb.connect()
+        conn.execute("INSTALL httpfs; LOAD httpfs;")
+        conn.execute(f"SET s3_endpoint='{endpoint}';")
+        conn.execute(f"SET s3_access_key_id='{access_key}';")
+        conn.execute(f"SET s3_secret_access_key='{secret_key}';")
+        conn.execute("SET s3_use_ssl=false;")
+        conn.execute("SET s3_url_style='path';")
+        return conn
+
+    def _execute_in_duckdb(self, sql: str, s3_paths: Dict[str, str]) -> pd.DataFrame:
+        """Mount MinIO Parquet views on the persistent connection and execute *sql*."""
+        conn = self._get_or_create_conn()
+
+        for table_name, s3_path in s3_paths.items():
+            conn.execute(
+                f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{s3_path}');"
+            )
+            logger.debug("[DuckDBExecutor] Mounted %s → %s", table_name, s3_path)
+
+        result = conn.execute(sql).df()
+        logger.info("[DuckDBExecutor] executed SQL, %d rows", len(result))
+        return result
 
     def _build_result(self, df: pd.DataFrame) -> ExecutionResult:
         columns = list(df.columns)
@@ -128,28 +163,3 @@ class DuckDBExecutor:
         )
         logger.info("[DuckDBExecutor] Uploaded CSV → %s (%d bytes)", key, data_len)
         return key
-
-    def _execute_in_duckdb(self, sql: str, s3_paths: Dict[str, str]) -> pd.DataFrame:
-        """Mount MinIO Parquet views and execute *sql* in a fresh DuckDB connection."""
-        endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-        access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-        secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-
-        with duckdb.connect() as conn:
-            conn.execute("INSTALL httpfs; LOAD httpfs;")
-            conn.execute(f"SET s3_endpoint='{endpoint}';")
-            conn.execute(f"SET s3_access_key_id='{access_key}';")
-            conn.execute(f"SET s3_secret_access_key='{secret_key}';")
-            conn.execute("SET s3_use_ssl=false;")
-            conn.execute("SET s3_url_style='path';")
-
-            for table_name, s3_path in s3_paths.items():
-                conn.execute(
-                    f"CREATE VIEW {table_name} AS SELECT * FROM read_parquet('{s3_path}');"
-                )
-                logger.debug("[DuckDBExecutor] Mounted %s → %s", table_name, s3_path)
-
-            result = conn.execute(sql).df()
-
-        logger.info("[DuckDBExecutor] executed SQL, %d rows", len(result))
-        return result
