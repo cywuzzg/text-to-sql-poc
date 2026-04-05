@@ -1,5 +1,4 @@
 """Unit tests for SQLGenerator (Claude API is mocked)."""
-import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,8 +12,11 @@ def _make_generator(mock_client: MagicMock) -> SQLGenerator:
 
 
 def _set_response(mock_client: MagicMock, payload: dict) -> None:
+    """Configure the mock to return a tool_use block with the given payload."""
+    tool_use_block = MagicMock()
+    tool_use_block.input = payload
     message = MagicMock()
-    message.content = [MagicMock(text=json.dumps(payload))]
+    message.content = [tool_use_block]
     mock_client.messages.create.return_value = message
 
 
@@ -120,17 +122,7 @@ class TestSQLGeneratorGenerate:
         gen.generate("test", SAMPLE_SCHEMA)
 
         system = mock_claude_client.messages.create.call_args.kwargs["system"]
-        # Should guide Claude toward DuckDB interval syntax
         assert "INTERVAL" in system
-
-    def test_invalid_json_raises_value_error(self, mock_claude_client):
-        message = MagicMock()
-        message.content = [MagicMock(text="not json")]
-        mock_claude_client.messages.create.return_value = message
-
-        gen = _make_generator(mock_claude_client)
-        with pytest.raises(ValueError):
-            gen.generate("some query", SAMPLE_SCHEMA)
 
     def test_schema_context_included_in_prompt(self, mock_claude_client):
         _set_response(
@@ -141,7 +133,6 @@ class TestSQLGeneratorGenerate:
         gen.generate("test", SAMPLE_SCHEMA)
 
         call_kwargs = mock_claude_client.messages.create.call_args.kwargs
-        # schema should appear in the system prompt
         system = call_kwargs["system"]
         assert "CREATE TABLE products" in system
 
@@ -154,16 +145,6 @@ class TestSQLGeneratorGenerate:
         result = gen.generate("列出商品名稱", SAMPLE_SCHEMA)
         assert result.explanation == "商品名稱列表"
 
-    def test_markdown_wrapped_json_is_parsed(self, mock_claude_client):
-        payload = {"sql": "SELECT * FROM products WHERE stock < 50", "explanation": "庫存不足"}
-        message = MagicMock()
-        message.content = [MagicMock(text=f"```json\n{json.dumps(payload)}\n```")]
-        mock_claude_client.messages.create.return_value = message
-
-        gen = _make_generator(mock_claude_client)
-        result = gen.generate("庫存不足的商品", SAMPLE_SCHEMA)
-        assert result.sql.upper().startswith("SELECT")
-
     def test_select_with_leading_whitespace_is_allowed(self, mock_claude_client):
         _set_response(
             mock_claude_client,
@@ -172,3 +153,26 @@ class TestSQLGeneratorGenerate:
         gen = _make_generator(mock_claude_client)
         result = gen.generate("all products", SAMPLE_SCHEMA)
         assert result.sql.strip().upper().startswith("SELECT")
+
+    def test_tools_parameter_passed_to_api(self, mock_claude_client):
+        _set_response(
+            mock_claude_client,
+            {"sql": "SELECT 1", "explanation": "trivial"},
+        )
+        gen = _make_generator(mock_claude_client)
+        gen.generate("test", SAMPLE_SCHEMA)
+
+        call_kwargs = mock_claude_client.messages.create.call_args.kwargs
+        assert "tools" in call_kwargs
+        assert call_kwargs["tools"][0]["name"] == "output_sql"
+
+    def test_tool_choice_forces_output_sql(self, mock_claude_client):
+        _set_response(
+            mock_claude_client,
+            {"sql": "SELECT 1", "explanation": "trivial"},
+        )
+        gen = _make_generator(mock_claude_client)
+        gen.generate("test", SAMPLE_SCHEMA)
+
+        call_kwargs = mock_claude_client.messages.create.call_args.kwargs
+        assert call_kwargs["tool_choice"] == {"type": "tool", "name": "output_sql"}

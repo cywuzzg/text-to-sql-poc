@@ -1,5 +1,4 @@
 """SQL Generator: converts natural language + schema context into a SQL SELECT statement."""
-import json
 import logging
 import re
 
@@ -13,6 +12,19 @@ logger = logging.getLogger(__name__)
 _UNSAFE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE", "REPLACE")
 # Pre-compile word-boundary patterns so 'created_at' is not matched by 'CREATE'.
 _UNSAFE_PATTERNS = [re.compile(rf"\b{kw}\b") for kw in _UNSAFE_KEYWORDS]
+
+_GENERATE_TOOL = {
+    "name": "output_sql",
+    "description": "Return the generated DuckDB SQL and a one-sentence explanation.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "sql": {"type": "string"},
+            "explanation": {"type": "string"},
+        },
+        "required": ["sql", "explanation"],
+    },
+}
 
 
 class UnsafeSQLError(Exception):
@@ -33,27 +45,11 @@ class SQLGenerator:
             max_tokens=512,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
+            tools=[_GENERATE_TOOL],
+            tool_choice={"type": "tool", "name": "output_sql"},
         )
 
-        raw_text = response.content[0].text.strip()
-        return self._parse_response(raw_text)
-
-    @staticmethod
-    def _strip_markdown(text: str) -> str:
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            text = text.rsplit("```", 1)[0]
-        return text.strip()
-
-    def _parse_response(self, raw_text: str) -> GenerateResult:
-        raw_text = self._strip_markdown(raw_text)
-        try:
-            data = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Cannot parse JSON from Claude response: {raw_text!r}"
-            ) from exc
-
+        data: dict = response.content[0].input
         sql: str = data.get("sql", "").strip()
         explanation: str = data.get("explanation", "")
 

@@ -1,5 +1,4 @@
 """Table Router: maps natural language query to relevant table names."""
-import json
 import logging
 
 import anthropic
@@ -11,6 +10,20 @@ from text_to_sql.router.prompts import ROUTER_SYSTEM_TEMPLATE, ROUTER_USER_TEMPL
 logger = logging.getLogger(__name__)
 
 _LOW_CONFIDENCE_THRESHOLD = 0.5
+
+_ROUTE_TOOL = {
+    "name": "route_tables",
+    "description": "Return which tables are needed to answer the query.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tables": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
+            "reasoning": {"type": "string"},
+        },
+        "required": ["tables", "confidence", "reasoning"],
+    },
+}
 
 
 class RouteParseError(Exception):
@@ -36,32 +49,11 @@ class TableRouter:
             max_tokens=256,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
+            tools=[_ROUTE_TOOL],
+            tool_choice={"type": "tool", "name": "route_tables"},
         )
 
-        raw_text = response.content[0].text.strip()
-        return self._parse_response(raw_text)
-
-    @staticmethod
-    def _strip_markdown(text: str) -> str:
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            text = text.rsplit("```", 1)[0]
-        return text.strip()
-
-    def _parse_response(self, raw_text: str) -> RouteResult:
-        raw_text = self._strip_markdown(raw_text)
-        try:
-            data = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise RouteParseError(
-                f"Cannot parse JSON from Claude response: {raw_text!r}"
-            ) from exc
-
-        if "tables" not in data:
-            raise RouteParseError(
-                f"Missing 'tables' field in Claude response: {data}"
-            )
-
+        data: dict = response.content[0].input
         result = RouteResult(
             tables=data["tables"],
             confidence=data.get("confidence", 1.0),
