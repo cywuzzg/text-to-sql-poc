@@ -145,6 +145,29 @@ def generate_dataframes(seed_value: int = 42) -> Dict[str, pd.DataFrame]:
     }
 
 
+def seed_sqlite(conn, seed_value: int = 42) -> None:
+    """Generate seed data and insert into a SQLite database.
+
+    Clears existing rows before inserting to ensure idempotency.
+
+    Args:
+        conn: sqlite3.Connection to the target database.
+        seed_value: Random seed for reproducibility.
+    """
+    dataframes = generate_dataframes(seed_value=seed_value)
+
+    # Clear in FK-safe order
+    conn.execute("DELETE FROM order_items")
+    conn.execute("DELETE FROM orders")
+    conn.execute("DELETE FROM products")
+    conn.execute("DELETE FROM users")
+
+    for table_name, df in dataframes.items():
+        df.to_sql(table_name, conn, if_exists="append", index=False)
+
+    conn.commit()
+
+
 def seed(minio_client, bucket: str, seed_value: int = 42) -> None:
     """Generate seed DataFrames and upload to MinIO as Parquet files.
 

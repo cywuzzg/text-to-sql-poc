@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from text_to_sql.config import DB_PATH
 from text_to_sql.database.schema import DDL_STATEMENTS
-from text_to_sql.database.seed import seed
+from text_to_sql.database.seed import seed_sqlite
 
 
 def init_db(db_path: str = DB_PATH) -> None:
@@ -17,7 +17,7 @@ def init_db(db_path: str = DB_PATH) -> None:
     for stmt in DDL_STATEMENTS:
         conn.execute(stmt)
     conn.commit()
-    seed(conn)
+    seed_sqlite(conn)
     conn.close()
     print(f"Database initialized at: {db_path}")
 
