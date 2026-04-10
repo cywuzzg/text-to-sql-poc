@@ -2,10 +2,10 @@
 
 ## Project Overview
 
-這是一個概念驗證（POC）專案，示範如何透過 Claude API 將自然語言查詢轉換為 SQLite SQL，並自動執行回傳結果。採用電商場景（users / products / orders / order_items）作為示範資料庫。
+這是一個概念驗證（POC）專案，示範如何透過 Claude API 將自然語言查詢轉換為 SQL，並透過 DuckDB 執行後回傳結果。採用電商場景（users / products / orders / order_items）作為示範資料庫，資料以 Parquet 格式儲存（支援本地與 MinIO 兩種模式）。
 
 ```
-自然語言 → TableRouter → SQLGenerator → MCPExecutor → 查詢結果
+自然語言 → TableRouter → SQLGenerator → QueryRouter → DuckDBExecutor → 查詢結果
 ```
 
 ---
@@ -58,8 +58,9 @@ python scripts/demo.py
 │  3. SQLGenerator.generate(query, schema_context)      │
 │     → GenerateResult { sql, explanation }             │
 │                                                       │
-│  4. Executor.execute(sql)                             │
-│     → ExecutionResult { success, columns, rows, ... } │
+│  4. QueryRouter.execute(sql, tables)                  │
+│     → engine, reasons, ExecutionResult                │
+│     { success, columns, rows, csv_url, ... }          │
 │                                                       │
 │  5. 組裝 PipelineResult 回傳                           │
 └───────────────────────────────────────────────────────┘
@@ -75,8 +76,10 @@ python scripts/demo.py
 | Router prompt 模板 | `src/text_to_sql/router/prompts.py` |
 | SQL Generator | `src/text_to_sql/generator/sql_generator.py` |
 | Generator prompt 模板 | `src/text_to_sql/generator/prompts.py` |
-| MCP Executor（正式用） | `src/text_to_sql/executor/mcp_executor.MCPExecutor` |
-| SQLite Executor（測試/fallback） | `src/text_to_sql/executor/mcp_executor.DirectSQLiteExecutor` |
+| Query Router（執行路由） | `src/text_to_sql/routing/query_router.py` |
+| DuckDB Executor（MinIO 模式） | `src/text_to_sql/routing/duckdb_executor.py` |
+| Local DuckDB Executor（本地模式） | `src/text_to_sql/routing/local_executor.py` |
+| Query Classifier | `src/text_to_sql/routing/query_classifier.py` |
 | Schema Registry（唯一真相） | `src/text_to_sql/database/schema_registry.py` |
 | DDL 語句 | `src/text_to_sql/database/schema.py` |
 | Seed 資料 | `src/text_to_sql/database/seed.py` |
@@ -119,7 +122,7 @@ ANTHROPIC_API_KEY=xxx pytest tests/integration/ -m integration -v
 
 ### Mock 策略
 - **Claude API**：用 `unittest.mock.MagicMock` 替換 `anthropic.Anthropic`，設定 `messages.create.return_value`
-- **MCP Server**：在 fixture 中注入 `DirectSQLiteExecutor(conn=in_memory_db)`，繞過 subprocess
+- **DuckDB Executor**：在 fixture 中注入 `LocalDuckDBExecutor(data_dir=tmp_path)`，使用本地 Parquet 檔案測試
 
 Mock 範例（見 `tests/unit/test_table_router.py`）：
 ```python
@@ -160,14 +163,14 @@ mock_client.messages.create.return_value = message
 - **Generator prompt**：`src/text_to_sql/generator/prompts.py` 的 `GENERATOR_SYSTEM_TEMPLATE`
   - `{schema_context}` 由 `get_schema_detail_for_generation(tables)` 填入
 
-### 切換 Executor
+### 切換 Executor 模式
 
 ```python
-# 使用 MCP（需要 uvx）
-pipeline = build_pipeline(db_path="database/ecommerce.db", use_mcp=True)
+# 使用 MinIO + DuckDB（正式環境，需設定 MINIO_* 環境變數）
+pipeline = build_pipeline()
 
-# 使用 DirectSQLite（fallback，無需 uvx）
-pipeline = build_pipeline(db_path="database/ecommerce.db", use_mcp=False)
+# 使用本地 Parquet 檔案（本地開發，無需 MinIO）
+pipeline = build_local_pipeline(data_dir="data/local")
 ```
 
 ### 切換 Claude 模型
@@ -185,7 +188,7 @@ CLAUDE_MODEL=claude-sonnet-4-6
 |---|---|
 | Python ≥ 3.11 | `mcp` SDK 要求；系統 python3 是 3.9，需用 `.venv` |
 | 只允許 SELECT | `SQLGenerator._validate_sql()` 拒絕所有非 SELECT 語句 |
-| MCPExecutor 需 `uvx` | `pip install uv` 後即可用；否則改用 `use_mcp=False` |
+| MinIO 模式需設定環境變數 | `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET` |
 | JSON 輸出 | Router 和 Generator 都依賴 Claude 輸出純 JSON；若出現解析錯誤，先檢查 prompt |
 | 低信心路由 | confidence < 0.5 時只 log 警告，不中斷流程 |
 
