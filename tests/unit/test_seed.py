@@ -1,11 +1,13 @@
 """Unit tests for seed data generation and MinIO upload."""
 import sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
+import duckdb
 import pandas as pd
 import pytest
 
-from text_to_sql.database.seed import generate_dataframes, seed, seed_sqlite
+from text_to_sql.database.seed import generate_dataframes, seed, seed_duckdb, seed_sqlite
 
 
 class TestGenerateDataframes:
@@ -208,3 +210,61 @@ class TestSeedSQLite:
         # Should be parseable as ISO datetime
         from datetime import datetime
         datetime.fromisoformat(row[0])  # raises if not valid ISO format
+
+
+class TestSeedDuckDB:
+    def test_seed_duckdb_creates_file(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        assert db_path.exists()
+
+    def test_seed_duckdb_inserts_correct_user_count(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        conn = duckdb.connect(str(db_path), read_only=True)
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        conn.close()
+        assert count == 20
+
+    def test_seed_duckdb_inserts_correct_product_count(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        conn = duckdb.connect(str(db_path), read_only=True)
+        count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+        conn.close()
+        assert count == 30
+
+    def test_seed_duckdb_inserts_correct_order_count(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        conn = duckdb.connect(str(db_path), read_only=True)
+        count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        conn.close()
+        assert count == 60
+
+    def test_seed_duckdb_inserts_order_items(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        conn = duckdb.connect(str(db_path), read_only=True)
+        count = conn.execute("SELECT COUNT(*) FROM order_items").fetchone()[0]
+        conn.close()
+        assert count >= 60
+
+    def test_seed_duckdb_is_idempotent(self, tmp_path):
+        db_path = tmp_path / "test.duckdb"
+        seed_duckdb(db_path)
+        seed_duckdb(db_path)
+        conn = duckdb.connect(str(db_path), read_only=True)
+        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        order_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        conn.close()
+        assert user_count == 20
+        assert order_count == 60
+
+    def test_seed_duckdb_accepts_string_path(self, tmp_path):
+        db_path = str(tmp_path / "test.duckdb")
+        seed_duckdb(db_path)
+        conn = duckdb.connect(db_path, read_only=True)
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        conn.close()
+        assert count == 20

@@ -2,9 +2,13 @@
 import io
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Tuple
 
+import duckdb
 import pandas as pd
+
+from text_to_sql.database.schema import DDL_STATEMENTS
 
 USERS: List[Tuple] = [
     ("alice", "alice@example.com", "north"),
@@ -166,6 +170,36 @@ def seed_sqlite(conn, seed_value: int = 42) -> None:
         df.to_sql(table_name, conn, if_exists="append", index=False)
 
     conn.commit()
+
+
+def seed_duckdb(db_path, seed_value: int = 42) -> None:
+    """Generate seed data and insert into a DuckDB database file.
+
+    Creates the database file and tables if they do not exist.
+    Clears existing rows before inserting to ensure idempotency.
+
+    Args:
+        db_path: Path (str or Path) to the target .duckdb file.
+        seed_value: Random seed for reproducibility.
+    """
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = duckdb.connect(str(db_path))
+    try:
+        for stmt in DDL_STATEMENTS:
+            conn.execute(stmt)
+
+        # Clear in FK-safe order
+        for table in ["order_items", "orders", "products", "users"]:
+            conn.execute(f"DELETE FROM {table}")
+
+        dataframes = generate_dataframes(seed_value=seed_value)
+        for table_name, df in dataframes.items():
+            conn.register(f"_df_{table_name}", df)
+            conn.execute(f"INSERT INTO {table_name} SELECT * FROM _df_{table_name}")
+    finally:
+        conn.close()
 
 
 def seed(minio_client, bucket: str, seed_value: int = 42) -> None:
