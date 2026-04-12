@@ -14,3 +14,6 @@ MINIO_SECRET_KEY: str = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET: str = os.environ.get("MINIO_BUCKET", "text-to-sql")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+DB_PATH: str = os.environ.get("DB_PATH", str(PROJECT_ROOT / "database" / "ecommerce.db"))
+DUCKDB_PATH: str = os.environ.get("DUCKDB_PATH", str(PROJECT_ROOT / "database" / "ecommerce.duckdb"))
