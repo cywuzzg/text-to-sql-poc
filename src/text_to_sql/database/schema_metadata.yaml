@@ -1,0 +1,53 @@
+tables:
+  users:
+    description: "電商平台用戶資料，包含帳號、Email、所屬地區"
+    example_queries:
+      - "查詢某地區所有用戶"
+      - "查某用戶的基本資料"
+      - "哪個地區用戶最多"
+    columns:
+      user_id: "主鍵，自動遞增"
+      username: "用戶名，唯一"
+      email: "電子郵件，唯一"
+      created_at: "帳號建立時間（ISO 8601）"
+      region: "所屬地區：north / south / east / west"
+
+  products:
+    description: "商品資料，包含名稱、品類、價格、庫存數量"
+    example_queries:
+      - "庫存不足的商品"
+      - "某品類所有商品"
+      - "價格最高的前 10 件商品"
+    columns:
+      product_id: "主鍵，自動遞增"
+      name: "商品名稱"
+      category: "品類：electronics / clothing / food / home"
+      price: "售價（元）"
+      stock: "庫存數量"
+      created_at: "上架時間（ISO 8601）"
+
+  orders:
+    description: "訂單主表，記錄每筆訂單的用戶、狀態、總金額"
+    example_queries:
+      - "某用戶所有訂單"
+      - "已完成訂單總金額"
+      - "最近 30 天訂單數量"
+    columns:
+      order_id: "主鍵，自動遞增"
+      user_id: "外鍵，關聯 users.user_id"
+      status: "訂單狀態：pending / paid / shipped / delivered / cancelled"
+      total_amount: "訂單總金額（元）"
+      created_at: "下單時間（ISO 8601）"
+
+  order_items:
+    description: "訂單明細表，記錄每筆訂單包含的商品、數量、下單時快照價格"
+    example_queries:
+      - "某訂單的所有商品"
+      - "銷售量最高的商品"
+      - "各商品的總銷售額"
+    columns:
+      item_id: "主鍵，自動遞增"
+      order_id: "外鍵，關聯 orders.order_id"
+      product_id: "外鍵，關聯 products.product_id"
+      quantity: "購買數量"
+      unit_price: "下單時的商品價格快照（元）"
