@@ -206,3 +206,59 @@ class TestBuildLocalPipeline:
         assert isinstance(result, PipelineResult)
         assert result.execution.success is True
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Tests: build_duckdb_file_pipeline factory
+# ---------------------------------------------------------------------------
+
+class TestBuildDuckDBFilePipeline:
+    def test_returns_text_to_sql_pipeline_instance(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_duckdb_file_pipeline
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        pipeline = build_duckdb_file_pipeline(db_path=tmp_path / "test.duckdb")
+        assert isinstance(pipeline, TextToSQLPipeline)
+
+    def test_uses_duckdb_file_executor(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_duckdb_file_pipeline
+        from text_to_sql.routing.duckdb_file_executor import DuckDBFileExecutor
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        pipeline = build_duckdb_file_pipeline(db_path=tmp_path / "test.duckdb")
+        assert isinstance(pipeline._query_router._duckdb_executor, DuckDBFileExecutor)
+
+    def test_db_path_set_correctly(self, tmp_path, monkeypatch):
+        from text_to_sql.pipeline import build_duckdb_file_pipeline
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        db_path = tmp_path / "test.duckdb"
+        pipeline = build_duckdb_file_pipeline(db_path=db_path)
+        executor = pipeline._query_router._duckdb_executor
+        assert executor._db_path == db_path
+
+    def test_run_with_mocked_components(self, tmp_path, monkeypatch):
+        """End-to-end: build_duckdb_file_pipeline runs with mocked Claude API."""
+        from text_to_sql.pipeline import build_duckdb_file_pipeline
+        import duckdb
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+        pipeline = build_duckdb_file_pipeline(db_path=tmp_path / "test.duckdb")
+
+        pipeline._router = MagicMock()
+        pipeline._router.route.return_value = RouteResult(
+            tables=["products"], confidence=0.9, reasoning="test"
+        )
+        pipeline._generator = MagicMock()
+        pipeline._generator.generate.return_value = GenerateResult(
+            sql="SELECT 1 AS x", explanation="test"
+        )
+
+        conn = duckdb.connect()
+        pipeline._query_router._duckdb_executor._conn = conn
+
+        result = pipeline.run("test query")
+        assert isinstance(result, PipelineResult)
+        assert result.execution.success is True
+        conn.close()

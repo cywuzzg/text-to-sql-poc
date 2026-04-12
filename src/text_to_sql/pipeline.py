@@ -104,6 +104,41 @@ def build_pipeline() -> TextToSQLPipeline:
     )
 
 
+def build_duckdb_file_pipeline(db_path=None) -> TextToSQLPipeline:
+    """Factory: construct a pipeline that reads from a persistent DuckDB file.
+
+    Uses DuckDBFileExecutor (no Parquet or MinIO) and duckdb_schema_registry
+    (schema derived dynamically from DuckDB + schema_metadata.yaml).
+
+    Args:
+        db_path: Path to the .duckdb file. Defaults to DUCKDB_PATH from config.
+    """
+    import anthropic
+    from pathlib import Path
+
+    from text_to_sql.config import ANTHROPIC_API_KEY, CLAUDE_MODEL, DUCKDB_PATH
+    from text_to_sql.database import duckdb_schema_registry
+    from text_to_sql.routing.duckdb_file_executor import DuckDBFileExecutor
+    from text_to_sql.routing.query_router import QueryRouter
+
+    if db_path is None:
+        db_path = DUCKDB_PATH
+    db_path = Path(db_path)
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    table_router = TableRouter(claude_client=client, model=CLAUDE_MODEL)
+    generator = SQLGenerator(claude_client=client, model=CLAUDE_MODEL)
+
+    file_executor = DuckDBFileExecutor(db_path=db_path)
+    query_router = QueryRouter(duckdb_executor=file_executor)
+
+    return TextToSQLPipeline(
+        router=table_router,
+        generator=generator,
+        query_router=query_router,
+    )
+
+
 def build_local_pipeline(data_dir=None) -> TextToSQLPipeline:
     """Factory: construct a pipeline that reads local Parquet files (no MinIO).
 
