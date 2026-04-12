@@ -4,6 +4,9 @@ Usage:
     # Local mode (no MinIO required — reads data/local/*.parquet)
     python scripts/demo.py
 
+    # DuckDB file mode (reads database/ecommerce.duckdb)
+    python scripts/demo.py --duckdb
+
     # MinIO mode
     python scripts/demo.py --minio
 """
@@ -13,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from text_to_sql.pipeline import build_local_pipeline, build_pipeline
+from text_to_sql.pipeline import build_duckdb_file_pipeline, build_local_pipeline, build_pipeline
 
 DEFAULT_LOCAL_DATA_DIR = Path(__file__).parent.parent / "data" / "local"
 
@@ -67,26 +70,49 @@ def _print_result(result) -> None:
     print()
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Text-to-SQL interactive demo")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--minio",
         action="store_true",
-        help="Use MinIO backend (default: local Parquet files in data/local/)",
+        default=False,
+        help="Use MinIO backend (S3 Parquet)",
+    )
+    mode.add_argument(
+        "--duckdb",
+        action="store_true",
+        default=False,
+        help="Use DuckDB file backend (database/ecommerce.duckdb)",
     )
     parser.add_argument(
         "--data-dir",
         type=Path,
         default=DEFAULT_LOCAL_DATA_DIR,
-        help="Local Parquet directory (only used without --minio)",
+        help="Local Parquet directory (only used without --minio / --duckdb)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
 
     print(BANNER)
 
     if args.minio:
         pipeline = build_pipeline()
         print("模式：MinIO（S3 Parquet）\n")
+
+    elif args.duckdb:
+        from text_to_sql.config import DUCKDB_PATH
+        db_path = Path(DUCKDB_PATH)
+        if not db_path.exists():
+            print(f"[提示] 找不到 DuckDB 檔案：{db_path}")
+            print("請先執行：python scripts/init_duckdb.py\n")
+            sys.exit(1)
+        pipeline = build_duckdb_file_pipeline()
+        print(f"模式：DuckDB 檔案（{db_path}）\n")
+
     else:
         data_dir: Path = args.data_dir
         if not data_dir.exists():
